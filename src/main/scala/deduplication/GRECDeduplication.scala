@@ -1,13 +1,11 @@
 package deduplication
 
-import deduplication.GRECDeduplication.session
+import lsh.LSH
 import org.apache.spark.graphx.{Edge, Graph, VertexId}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.types.{DoubleType, IntegerType}
-import org.apache.spark.sql.{DataFrame, Dataset, SQLContext, SparkSession}
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
 import org.apache.spark.sql.functions.{lit, udf}
-import io.krom.lsh.Lsh
 
 /**
   * Created by usuario on 21/03/2017.
@@ -40,6 +38,8 @@ object GRECDeduplication {
 
   val DivisionSize = 100
 
+  val lsh = new LSH[Int](9, 200, 20)
+
   def main(args: Array[String]) {
     deduplicationProcess()
   }
@@ -57,7 +57,7 @@ object GRECDeduplication {
 
     val deduplicatedArticles = applyDeduplicateReference(articles, duplicateReferences)
 
-    deduplicatedArticles.show()
+    deduplicatedArticles.filter(_.sameAs != null).show()
   }
 
   def cleanData(data: DataFrame): (Dataset[JournalAuthor], Dataset[JournalArticle]) = {
@@ -101,28 +101,21 @@ object GRECDeduplication {
     (journalAuthors, journalArticles)
   }
 
-  def obtainDuplicateReference(articles: Dataset[JournalArticle]): DataFrame = {
-    def divideAndCartesian(data: Dataset[IndexArticle], divisionSize: Int): Dataset[List[IndexArticle]] = {
-      data.groupByKey((a: IndexArticle) => a.index / divisionSize).flatMapGroups((l: Long, x: Iterator[IndexArticle]) => x.toList.combinations(2)) //.map({case (article1 :: article2 :: _) => (article1, article2)})
-    }
-
-    val sortedByTitle = articles.orderBy("title")
-    val withIndex = sortedByTitle.rdd.zipWithIndex().toDF("article", "index").as[IndexArticle]
-    val cartesian = divideAndCartesian(withIndex, DivisionSize)
-    val sameArticles = cartesian.filter(c => c match {
-      case (article1 :: article2 :: _) => article1.article.isNearDuplicate(article2.article)
-      case _ => false
-    })
-      .map({ case (article1 :: article2 :: _) => (article1.article.code, article2.article.code) }).toDF("code", "sameAs")
-    sameArticles
+  def getConnectedGraphs(lsh_buckets: RDD[List[Int]]): RDD[(Int, Int)] = {
+    val edges: RDD[(VertexId, VertexId)] = lsh_buckets.flatMap(x => x.combinations(2).map(t => (t.head, t.last)))
+    val graph = Graph.fromEdgeTuples(edges, "")
+    val cc = graph.connectedComponents()
+    cc.vertices.map(x => (x._1.toInt, x._2.toInt))
   }
 
-  def applyDeduplicateReference(articles: Dataset[JournalArticle], duplicateReferences: DataFrame): Dataset[JournalArticle] = {
-    val vertex: RDD[(VertexId, String)] = duplicateReferences.select("code").union(duplicateReferences.select("sameAs")).distinct().rdd.map(x => (x.getInt(0), ""))
-    val edges: RDD[Edge[Any]] = duplicateReferences.rdd.map(x => Edge(x.getInt(0), x.getInt(1)))
-    val graph = Graph(vertex, edges)
-    val cc = graph.connectedComponents()
-    val deduplicated = articles.drop("sameAs").join(cc.vertices.toDF("code", "sameAs"), Seq("code"), "left_outer").as[JournalArticle]
+  def obtainDuplicateReference(articles: Dataset[JournalArticle]): RDD[(Int, Int)] = {
+    val lsh_buckets: RDD[List[Int]] = lsh(articles.rdd.map(a => (a.code, a.title)))
+    val similarArticles = getConnectedGraphs(lsh_buckets)
+    similarArticles
+  }
+
+  def applyDeduplicateReference(articles: Dataset[JournalArticle], duplicateReferences: RDD[(Int, Int)]): Dataset[JournalArticle] = {
+    val deduplicated = articles.drop("sameAs").join(duplicateReferences.toDF("code", "sameAs"), Seq("code"), "left_outer").as[JournalArticle]
     deduplicated
   }
 }

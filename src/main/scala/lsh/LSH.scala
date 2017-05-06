@@ -12,8 +12,8 @@ class LSH[T](shingleSize: Int, numHash: Int, numBands: Int) extends Serializable
   def apply(data: RDD[(T, String)]): RDD[List[T]] = {
     val signatures: RDD[((Int, T), (Int, Int))] =
       data.flatMap({ case (id, text: String) => {
-        val shingleList = text.sliding(shingleSize).toList
-        randInts.map({ case (h, i) => ((i % numBands, id), (i, shingleList.map(_.hashCode() ^ h).min))})
+        val shingleList = text.sliding(shingleSize).toList.distinct
+        randInts.map({ case (h, i) => ((i % numBands, id), (i, shingleList.map(_.hashCode().<<(5) ^ h).min))})
       }
     })
 

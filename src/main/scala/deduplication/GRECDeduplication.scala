@@ -1,5 +1,8 @@
 package deduplication
 
+import java.util.Calendar
+
+import info.debatty.java.stringsimilarity.NormalizedLevenshtein
 import lsh.LSH
 import org.apache.spark.graphx.{Edge, Graph, VertexId}
 import org.apache.spark.rdd.RDD
@@ -10,13 +13,66 @@ import org.apache.spark.sql.functions.{lit, udf}
 /**
   * Created by usuario on 21/03/2017.
   */
-case class JournalArticle(code: Integer, publicationYear: Integer, title: String, nAuthors: Integer, authors: String,
-                          volume: Integer, numJournal: String, iniPage: String, endPage: String, DOI: String,
-                          journalType: String, journalTypeDesc: String, issn: String, journalCode: Integer, journalDesc: String,
-                          isiCode: Integer, impactFactor: Double, classification: String, sameAs: BigInt) {
+
+case class JournalArticle(code: Int, publicationYear: String, title: String, nAuthors: String, authors: String,
+                          volume: String, numJournal: String, iniPage: String, endPage: String, DOI: String,
+                          articleType: String, articleTypeDesc: String, issn: String, journalCode: String, journalDesc: String,
+                          isiCode: String, impactFactor: String, classification: String, sameAs: BigInt) {
+  // Article info
+  val PublicationYearWeight = 25
+  val TitleWeight = 30
+  val NAuthorsWeight = 10
+  val AuthorsWeight = 30
+  val ArticleTypeWeight = 5
+
+  // Article in journal
+  val VolumeWeight = 10
+  val NumJournalWeight = 10
+  val IniPageWeight = 20
+  val EndPageWeight = 20
+  val DOIWeight = 40
+
+  // Journal
+  val ISSNWeight = 30
+  val JournalCodeWeight = 30
+  val JournalDescriptionWeight = 10
+  val IsiCodeWeight = 30
+
   def isNearDuplicate(article: JournalArticle): Boolean = {
-    val numEqualFields = this.productIterator.zip(article.productIterator).count((articles) => articles._1 == articles._2)
-    numEqualFields >= this.productArity / 2
+    def sameArticleInfo: Boolean = {
+      var mark = 0.0
+      var maxMark = 0
+
+      if(this.publicationYear != null && article.publicationYear != null){
+        maxMark += PublicationYearWeight
+        if(this.publicationYear == article.publicationYear) mark += PublicationYearWeight
+      }
+
+
+      if(this.title != null && article.title != null){
+        maxMark += TitleWeight
+        mark += (1 - new NormalizedLevenshtein().distance(this.title, article.title)) * TitleWeight
+      }
+
+      if(this.nAuthors != null && article.nAuthors != null){
+        maxMark += NAuthorsWeight
+        if(this.nAuthors == article.nAuthors) mark += NAuthorsWeight
+      }
+
+      if(this.authors != null && article.authors != null){
+        maxMark += AuthorsWeight
+        mark += (1 - new NormalizedLevenshtein().distance(this.authors, article.authors)) * AuthorsWeight
+      }
+
+      if((this.articleType != null && article.articleType != null)
+        || (this.articleTypeDesc != null && article.articleTypeDesc != null)){
+        maxMark += ArticleTypeWeight
+        if(this.articleType == article.articleType || this.articleTypeDesc == article.articleTypeDesc) mark += ArticleTypeWeight
+      }
+
+      mark / maxMark > 0.6
+    }
+    sameArticleInfo
   }
 }
 
@@ -24,7 +80,7 @@ case class JournalAuthor(code: Integer, nif: String, name: String)
 
 case class IndexArticle(index: Long, article: JournalArticle)
 
-case class CartessianIndexArticles(index1: Long, article1: JournalArticle, index2: Long, article2: JournalArticle)
+case class CandidateArticles(article1: JournalArticle, article2: JournalArticle)
 
 object GRECDeduplication {
   val session: SparkSession = SparkSession
@@ -58,6 +114,10 @@ object GRECDeduplication {
     val deduplicatedArticles = applyDeduplicateReference(articles, duplicateReferences)
 
     deduplicatedArticles.filter(_.sameAs != null).show()
+    deduplicatedArticles.orderBy("sameAs").write.csv("src/main/resources/result.csv")
+
+    //rawArticles.write.csv("test")
+
   }
 
   def cleanData(data: DataFrame): (Dataset[JournalAuthor], Dataset[JournalArticle]) = {
@@ -72,8 +132,8 @@ object GRECDeduplication {
       .withColumnRenamed("NUM_REVISTA", "numJournal")
       .withColumnRenamed("PINI", "iniPage")
       .withColumnRenamed("PFI", "endPage")
-      .withColumnRenamed("TIPUS", "journalType")
-      .withColumnRenamed("TIPUS_DESC", "journalTypeDesc")
+      .withColumnRenamed("TIPUS", "articleType")
+      .withColumnRenamed("TIPUS_DESC", "articleTypeDesc")
       .withColumnRenamed("ISSN", "issn")
       .withColumnRenamed("REVISTA_CODI", "journalCode")
       .withColumnRenamed("REVISTA_DESC", "journalDesc")
@@ -88,29 +148,41 @@ object GRECDeduplication {
 
     val articles = articlesFilledNa
       .withColumn("code", articlesFilledNa("code").cast(IntegerType))
-      .withColumn("publicationYear", extractYear(articlesFilledNa("publicationYear")).cast(IntegerType))
-      .withColumn("nAuthors", articlesFilledNa("nAuthors").cast(IntegerType))
-      .withColumn("volume", articlesFilledNa("volume").cast(IntegerType))
-      .withColumn("journalCode", articlesFilledNa("journalCode").cast(IntegerType))
-      .withColumn("isiCode", articlesFilledNa("isiCode").cast(IntegerType))
-      .withColumn("impactFactor", formatDouble(articlesFilledNa("impactFactor")).cast(DoubleType))
+      .withColumn("publicationYear", extractYear(articlesFilledNa("publicationYear")))
+      .withColumn("nAuthors", articlesFilledNa("nAuthors"))
+      .withColumn("volume", articlesFilledNa("volume"))
+      .withColumn("journalCode", articlesFilledNa("journalCode"))
+      .withColumn("isiCode", articlesFilledNa("isiCode"))
+      .withColumn("impactFactor", formatDouble(articlesFilledNa("impactFactor")))
 
     val journalAuthors = articles.select("nif", "name", "code").as[JournalAuthor]
-    val journalArticles = articles.drop("nif").drop("name").dropDuplicates().as[JournalArticle]
+    val journalArticles = articles.drop("nif").drop("name").dropDuplicates().as[JournalArticle].sample(false, 0.6)
 
     (journalAuthors, journalArticles)
   }
 
-  def getConnectedGraphs(lsh_buckets: RDD[List[Int]]): RDD[(Int, Int)] = {
-    val edges: RDD[(VertexId, VertexId)] = lsh_buckets.flatMap(x => x.combinations(2).map(t => (t.head, t.last)))
-    val graph = Graph.fromEdgeTuples(edges, "")
+  def getConnectedGraphs(edges: RDD[(Int, Int)]): RDD[(Int, Int)] = {
+    val graph = Graph.fromEdgeTuples(edges.map(duplicate => (duplicate._1.toLong, duplicate._2.toLong)), "")
     val cc = graph.connectedComponents()
     cc.vertices.map(x => (x._1.toInt, x._2.toInt))
   }
 
+  def compareAndGetDuplicates(lsh: RDD[List[Int]], articles: Dataset[JournalArticle]): RDD[(Int, Int)] = {
+    val distinctLsh = lsh.flatMap(candidates => candidates.combinations(2))
+      .map(candidatePair => if(candidatePair.head > candidatePair.last) (candidatePair.last, candidatePair.head)
+                            else (candidatePair.head, candidatePair.last))
+      .distinct().toDF("id1", "id2")
+    val id1Join = distinctLsh.joinWith(articles, $"id1" === $"code").toDF("id1", "article1")
+    val id2Join = distinctLsh.joinWith(articles, $"id2" === $"code").toDF("id2", "article2")
+    id1Join.join(id2Join, $"id1" === $"id2").drop("id1", "id2").as[CandidateArticles]
+    .filter(candidatePair => candidatePair.article1.isNearDuplicate(candidatePair.article2))
+      .map(duplicate => (duplicate.article1.code, duplicate.article2.code)).rdd
+  }
+
   def obtainDuplicateReference(articles: Dataset[JournalArticle]): RDD[(Int, Int)] = {
     val lsh_buckets: RDD[List[Int]] = lsh(articles.rdd.map(a => (a.code, a.title)))
-    val similarArticles = getConnectedGraphs(lsh_buckets)
+    val duplicates = compareAndGetDuplicates(lsh_buckets, articles)
+    val similarArticles = getConnectedGraphs(duplicates)
     similarArticles
   }
 

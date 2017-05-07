@@ -13,7 +13,6 @@ import org.apache.spark.sql.functions.{lit, udf}
 /**
   * Created by usuario on 21/03/2017.
   */
-
 case class JournalArticle(code: Int, publicationYear: String, title: String, nAuthors: String, authors: String,
                           volume: String, numJournal: String, iniPage: String, endPage: String, DOI: String,
                           articleType: String, articleTypeDesc: String, issn: String, journalCode: String, journalDesc: String,
@@ -24,6 +23,7 @@ case class JournalArticle(code: Int, publicationYear: String, title: String, nAu
   val NAuthorsWeight = 10
   val AuthorsWeight = 30
   val ArticleTypeWeight = 5
+  val ArticleInfoThreshold = 0.6
 
   // Article in journal
   val VolumeWeight = 10
@@ -31,12 +31,14 @@ case class JournalArticle(code: Int, publicationYear: String, title: String, nAu
   val IniPageWeight = 20
   val EndPageWeight = 20
   val DOIWeight = 40
+  val ArticleInJournalThreshold = 0.6
 
   // Journal
   val ISSNWeight = 30
   val JournalCodeWeight = 30
   val JournalDescriptionWeight = 10
   val IsiCodeWeight = 30
+  val JournalThreshold = 0.6
 
   def isNearDuplicate(article: JournalArticle): Boolean = {
     def sameArticleInfo: Boolean = {
@@ -70,9 +72,69 @@ case class JournalArticle(code: Int, publicationYear: String, title: String, nAu
         if(this.articleType == article.articleType || this.articleTypeDesc == article.articleTypeDesc) mark += ArticleTypeWeight
       }
 
-      mark / maxMark > 0.6
+      maxMark == 0 || mark / maxMark > ArticleInfoThreshold
     }
-    sameArticleInfo
+
+    def sameArticleInJournal: Boolean = {
+      var mark = 0.0
+      var maxMark = 0
+
+      if(this.volume != null && article.volume != null){
+        maxMark += VolumeWeight
+        if(this.volume == article.volume) mark += VolumeWeight
+      }
+
+      if(this.numJournal != null && article.numJournal != null){
+        maxMark += NumJournalWeight
+        if(this.numJournal == article.numJournal) mark += NumJournalWeight
+      }
+
+      if(this.iniPage != null && article.iniPage != null){
+        maxMark += IniPageWeight
+        if(this.iniPage == article.iniPage) mark += IniPageWeight
+      }
+
+      if(this.endPage != null && article.endPage != null){
+        maxMark += EndPageWeight
+        if(this.endPage == article.endPage) mark += EndPageWeight
+      }
+
+      if(this.DOI != null && article.DOI != null){
+        maxMark += DOIWeight
+        if(this.DOI == article.DOI) mark += DOIWeight
+      }
+
+      maxMark == 0 || mark / maxMark > ArticleInJournalThreshold
+    }
+
+    def sameJournal: Boolean = {
+      var mark = 0.0
+      var maxMark = 0
+
+      if(this.issn != null && article.issn != null){
+        maxMark += ISSNWeight
+        if(this.issn == article.issn) mark += ISSNWeight
+      }
+
+      if(this.journalCode != null && article.journalCode != null){
+        maxMark += JournalCodeWeight
+        if(this.journalCode == article.journalCode) mark += JournalCodeWeight
+      }
+
+      if(this.journalDesc != null && article.journalDesc != null){
+        maxMark += JournalDescriptionWeight
+        mark += (1 - new NormalizedLevenshtein().distance(this.journalDesc, article.journalDesc)) * JournalDescriptionWeight
+      }
+
+      if(this.isiCode != null && article.isiCode != null){
+        maxMark += IsiCodeWeight
+        if(this.isiCode == article.isiCode) mark += IsiCodeWeight
+      }
+
+      maxMark == 0 || mark / maxMark > JournalThreshold
+    }
+
+    sameArticleInfo && sameArticleInJournal && sameJournal
   }
 }
 
@@ -81,6 +143,7 @@ case class JournalAuthor(code: Integer, nif: String, name: String)
 case class IndexArticle(index: Long, article: JournalArticle)
 
 case class CandidateArticles(article1: JournalArticle, article2: JournalArticle)
+
 
 object GRECDeduplication {
   val session: SparkSession = SparkSession
@@ -114,7 +177,7 @@ object GRECDeduplication {
     val deduplicatedArticles = applyDeduplicateReference(articles, duplicateReferences)
 
     deduplicatedArticles.filter(_.sameAs != null).show()
-    deduplicatedArticles.orderBy("sameAs").write.csv("src/main/resources/result.csv")
+    //deduplicatedArticles.orderBy("sameAs").write.csv("src/main/resources/result.csv")
 
     //rawArticles.write.csv("test")
 

@@ -204,22 +204,19 @@ object GRECDeduplication {
       .withColumnRenamed("FACTOR_IMPACTE", "impactFactor").drop("FACTOR_IMPACTE")
       .withColumnRenamed("CLASSIFICACIO", "classification")
       .withColumn("sameAs", lit(0))
-    val articlesFilledNa = articlesRenamedCols.na.fill("-1", Array("volume", "numJournal", "iniPage", "endPage", "journalCode", "isiCode", "impactFactor"))
 
     val extractYear = udf[String, String]("(\\d{4})".r.findFirstMatchIn(_).map(_ group 1).getOrElse("0"))
-    val formatDouble = udf[String, String](_.replace(",", "."))
 
-    val articles = articlesFilledNa
-      .withColumn("code", articlesFilledNa("code").cast(IntegerType))
-      .withColumn("publicationYear", extractYear(articlesFilledNa("publicationYear")))
-      .withColumn("nAuthors", articlesFilledNa("nAuthors"))
-      .withColumn("volume", articlesFilledNa("volume"))
-      .withColumn("journalCode", articlesFilledNa("journalCode"))
-      .withColumn("isiCode", articlesFilledNa("isiCode"))
-      .withColumn("impactFactor", formatDouble(articlesFilledNa("impactFactor")))
+    val articles = articlesRenamedCols
+      .withColumn("code", articlesRenamedCols("code").cast(IntegerType))
+      .withColumn("publicationYear", extractYear(articlesRenamedCols("publicationYear")))
+      .withColumn("nAuthors", articlesRenamedCols("nAuthors"))
+      .withColumn("volume", articlesRenamedCols("volume"))
+      .withColumn("journalCode", articlesRenamedCols("journalCode"))
+      .withColumn("isiCode", articlesRenamedCols("isiCode"))
 
     val journalAuthors = articles.select("nif", "name", "code").as[JournalAuthor]
-    val journalArticles = articles.drop("nif").drop("name").dropDuplicates().as[JournalArticle].sample(false, 0.6)
+    val journalArticles = articles.drop("nif").drop("name").dropDuplicates().as[JournalArticle]
 
     (journalAuthors, journalArticles)
   }

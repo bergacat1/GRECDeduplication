@@ -157,7 +157,7 @@ object GRECDeduplication {
 
   val DivisionSize = 100
 
-  val lsh = new LSH[Int](9, 200, 20)
+  val lsh = new LSH[Int](9, 200, 50)
 
   def main(args: Array[String]) {
     deduplicationProcess()
@@ -179,7 +179,7 @@ object GRECDeduplication {
     deduplicatedArticles.filter(_.sameAs != null).show()
     //deduplicatedArticles.orderBy("sameAs").write.csv("src/main/resources/result.csv")
 
-    //rawArticles.write.csv("test")
+//    duplicateReferences.filter(x => (x._1 == 6698 && x._2 == 6865) || (x._1 == 6865 && x._2 == 6698)).toDF().show()
 
   }
 
